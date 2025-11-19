@@ -128,4 +128,9 @@ def load_config_and_backend(filename):
     except ValueError:
         raise ConfigError("[serles]allowWildcards= must be 'true' or 'false'") from None
 
+    try:
+        config["allowDnsPersist01"] = cparser["serles"].getboolean("allowDnsPersist01", fallback=False)
+    except ValueError:
+        raise ConfigError("[serles]allowDnsPersist01= must be 'true' or 'false'") from None
+
     return config, backend

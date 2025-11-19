@@ -4,6 +4,7 @@ import secrets
 
 from enum import Enum
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlparse
 
 from flask_sqlalchemy import SQLAlchemy  # python3-flask-sqlalchemy.noarch
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -175,6 +176,7 @@ class ChallengeTypes(Enum):
     http_01 = "http-01"
     dns_01 = "dns-01"
     tls_alpn_01 = "tls-alpn-01"
+    dns_persist_01 = "dns-persist-01"
 
 
 class ChallengeStatus(Enum):
@@ -219,7 +221,8 @@ class Challenge(db.Model):  # RFC8555 §7.1.5
             "validated": self.validated.isoformat() \
                     if self.status == ChallengeStatus.valid else None,  # required if valid
             "error": json.loads(self.error) if self.error else None, # optional
-            "token": self.token,
+            "token": self.token if self.type != ChallengeTypes.dns_persist_01 else None,
+            "issuer-domain-names": [urlparse(self.url).hostname] if self.type == ChallengeTypes.dns_persist_01 else None,
         }.items() if v is not None}
         # fmt: on
 

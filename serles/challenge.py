@@ -3,12 +3,14 @@ import json
 import socket
 import hashlib
 import base64
+import time
 import requests
 import jwcrypto.jwk  # fedora package: python3-jwcrypto.noarch
 import jwcrypto.jws
 import dns.resolver
 
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from cryptography import x509  # python3-cryptography.x86_64
 from cryptography.hazmat.backends import default_backend as x509_backend
@@ -56,6 +58,8 @@ def verify_challenge(challenge):
         error, info = dns_challenge(challenge)
     elif challenge.type == ChallengeTypes.tls_alpn_01:
         error, info = alpn_challenge(challenge)
+    elif challenge.type == ChallengeTypes.dns_persist_01:
+        error, info = dns_persist_challenge(challenge)
     else:
         challenge.status = ChallengeStatus.invalid
         db.session.commit()
@@ -175,6 +179,55 @@ def dns_challenge(challenge):  # RFC8555 §8.4
             break
     else:
         return "incorrectResponse", f"no token found in TXT record {expect}"
+
+    return None, None  # no error occurred :)
+
+
+def dns_persist_challenge(challenge):  # https://github.com/ietf-wg-acme/draft-ietf-acme-dns-persist
+    """ verify a DNS-PERSIST-01 Challenge
+
+    Args:
+        challenge (Challenge): The DNS-PERSIST-01 challenge to verify.
+
+    Returns:
+        tuple(str,str): problem detail type of the error and  textual
+        description, or (None,None).
+    """
+    host = challenge.authorization.identifier.value
+
+    if challenge.authorization.wildcard:
+        host = host.removeprefix("*.")
+        if not config["allowWildcards"]:
+            return "rejectedIdentifier", f"wildcard certificate issuance disallowed"
+
+    # Try to resolve the _acme-challenge record
+    try:
+        answers = dns.resolver.resolve(f"_validation-persist.{host}", "TXT")
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return "dns", f"no TXT record found for _validation-persist.{host}"
+    except dns.resolver.NoNameservers as e:
+        return "dnsNoNameServers", str(e)
+    except dns.resolver.YXDOMAIN as e:
+        return "dnsQueryTooLong", str(e)
+    except dns.resolver.LifetimeTimeout as e:
+        return "dnsTimeout", str(e)
+
+    # Verify the expected challenge is present
+    accounturi = challenge.authorization.order.account.url
+    for answer in answers:
+        issue_value = b"".join(answer.strings).decode()
+        issuer_domain_name, *parameters = issue_value.strip().split(";")
+        params = {
+            tag.strip().lower(): value.strip() for tag, value in (parameter.split("=", 1) for parameter in parameters)
+        }
+        if issuer_domain_name == urlparse(accounturi).hostname:
+            if (params.get("accounturi") == accounturi):
+                persistUntil = params.get("persistuntil")
+                if persistUntil == None or time.time() < int(persistUntil):
+                    if not challenge.authorization.wildcard or params.get("policy") == "wildcard":
+                        break
+    else:
+        return "incorrectResponse", f"no valid accounturi found in TXT record {accounturi}"
 
     return None, None  # no error occurred :)
 

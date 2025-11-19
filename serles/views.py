@@ -4,6 +4,7 @@ import jwcrypto.jws
 from flask import g, make_response
 from flask_restful import Resource, Api
 
+from .configloader import get_config
 from .utils import base64d
 from .models import *
 from .challenge import (
@@ -14,6 +15,8 @@ from .challenge import (
 from .exceptions import ACMEError
 
 api = Api()
+
+config, _ = get_config()
 
 
 def init_config():
@@ -139,6 +142,8 @@ class NewOrder(Resource):
                 Challenge(type=ChallengeTypes.dns_01),
                 Challenge(type=ChallengeTypes.tls_alpn_01),
             ]
+            if config["allowDnsPersist01"]:
+                challenges.append(Challenge(type=ChallengeTypes.dns_persist_01))
             for c in challenges:
                 db.session.add(c)
             authz = Authorization(
@@ -160,6 +165,17 @@ class NewOrder(Resource):
         )
 
         db.session.add(order)
+
+        # Try just-in-time validation
+        # https://ietf-wg-acme.github.io/draft-ietf-acme-dns-persist/draft-ietf-acme-dns-persist.html#name-just-in-time-validation
+        if config["allowDnsPersist01"]:
+            for challenge in challenges:
+                if challenge.type == ChallengeTypes.dns_persist_01:
+                    try:
+                        verify_challenge(challenge)
+                    except:
+                        challenge.error = None
+
         db.session.commit()  # note: accessing `order` after the commit requires setting expire_on_commit=False
         return (
             order.serialized,
